@@ -1,0 +1,29 @@
+{
+	"addonId": "mlrecorder",
+	"displayName": "MLRecorder",
+	"URL": "",
+	"description": "Este complemento proporciona Comandos globales de NVDA para aislar y grabar el audio del proceso enfocado, micr\u00f3fono o audio mixto mediante MLRecorder.",
+	"sha256": "8976c2baf82d4cee04dcb683e909069ecf8de4b6ca9b8a149c9179b42c850b6e",
+	"homepage": "https://github.com/marcomolinaleija/addon-MLRecorder",
+	"addonVersionName": "2026.02.17",
+	"addonVersionNumber": {
+		"major": 2026,
+		"minor": 2,
+		"patch": 17
+	},
+	"minNVDAVersion": {
+		"major": 2025,
+		"minor": 1,
+		"patch": 0
+	},
+	"lastTestedVersion": {
+		"major": 2026,
+		"minor": 1,
+		"patch": 0
+	},
+	"channel": "stable",
+	"publisher": "",
+	"sourceURL": "https://github.com/marcomolinaleija/addon-MLRecorder",
+	"license": "Apache-2.0",
+	"licenseURL": "https://www.apache.org/licenses/LICENSE-2.0"
+}

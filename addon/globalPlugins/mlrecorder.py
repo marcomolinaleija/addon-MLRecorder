@@ -41,7 +41,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._mixedSession = None
 		self._lastProcessPid: Optional[int] = None
 		self._lastProcessName = ""
-		self._lastDiagnosticPath: Optional[Path] = None
+
 
 	def terminate(self):
 		self._stopAllSessions()
@@ -78,11 +78,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		output.mkdir(parents=True, exist_ok=True)
 		return str(output)
 
-	def _diagnosticDir(self) -> Path:
-		base = Path(config.getUserDefaultConfigPath())
-		diag = base / "mlrecorder-diagnostics"
-		diag.mkdir(parents=True, exist_ok=True)
-		return diag
 
 	def _runtimeArchFolder(self) -> str:
 		return "x86" if (8 * struct.calcsize("P")) == 32 else "x64"
@@ -138,50 +133,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		except Exception as exc:
 			return "error: %s" % exc
 
-	def _writeDiagnosticReport(self, reason: str, exc: Optional[Exception] = None) -> Path:
-		now = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-		reportPath = self._diagnosticDir() / ("mlrecorder-diag-%s.txt" % now)
-		self._lastDiagnosticPath = reportPath
-
-		binRoot = self._addonBinRoot()
-		selectedBinDir = self._selectedBinDir()
-		core, flac, ogg, opus = self._addonDllPaths(selectedBinDir)
-		lines = []
-		lines.append("MLRecorder NVDA diagnostic report")
-		lines.append("timestamp=%s" % datetime.datetime.now().isoformat())
-		lines.append("reason=%s" % reason)
-		lines.append("")
-		lines.append("python_version=%s" % sys.version.replace("\n", " "))
-		lines.append("python_executable=%s" % sys.executable)
-		lines.append("python_bitness=%s" % (8 * struct.calcsize("P")))
-		lines.append("PROCESSOR_ARCHITECTURE=%s" % os.environ.get("PROCESSOR_ARCHITECTURE", ""))
-		lines.append("PROCESSOR_ARCHITEW6432=%s" % os.environ.get("PROCESSOR_ARCHITEW6432", ""))
-		lines.append("MLRECORDER_DLL=%s" % os.environ.get("MLRECORDER_DLL", ""))
-		lines.append("addon_dir=%s" % self._addonDir())
-		lines.append("selected_runtime_arch=%s" % self._runtimeArchFolder())
-		lines.append("selected_bin_dir=%s" % selectedBinDir)
-		lines.append("bin_root=%s" % binRoot)
-		lines.append("bin_x86_exists=%s" % (binRoot / "x86").exists())
-		lines.append("bin_x64_exists=%s" % (binRoot / "x64").exists())
-		lines.append("")
-		lines.append("dll_checks:")
-
-		for dllPath in (core, flac, ogg, opus):
-			size = dllPath.stat().st_size if dllPath.exists() else 0
-			lines.append("  path=%s" % dllPath)
-			lines.append("    exists=%s" % dllPath.exists())
-			lines.append("    size=%s" % size)
-			lines.append("    pe_arch=%s" % self._peArchitecture(dllPath))
-			lines.append("    load_probe=%s" % self._probeLoad(dllPath))
-
-		if exc is not None:
-			lines.append("")
-			lines.append("exception=%s" % repr(exc))
-			lines.append("traceback:")
-			lines.append(traceback.format_exc())
-
-		reportPath.write_text("\n".join(lines), encoding="utf-8", errors="replace")
-		return reportPath
 
 	def _ensureRuntime(self) -> bool:
 		if self._mlr is not None:
@@ -206,9 +157,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			# Force addon-local DLL to avoid accidental MLRECORDER_DLL env overrides.
 			mlr.initialize(dll_path=str(dllPath))
 		except Exception as exc:
-			reportPath = self._writeDiagnosticReport("initialize-failed", exc=exc)
 			self._speak(_("No se pudo inicializar MLRecorder: %s") % exc)
-			self._speak(_("Se generó reporte de depuración en: %s") % reportPath.name)
 			return False
 
 		self._mlr = mlr
@@ -423,20 +372,20 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			parts.append(_("sin grabaciones activas"))
 		self._speak(", ".join(parts))
 
+
 	@script(
-		description=_("Genera reporte de depuración de MLRecorder."),
+		description=_("Abre la carpeta de grabaciones."),
 		category=_("MLRecorder"),
-		gesture="kb:NVDA+shift+d",
+		gesture="kb:NVDA+shift+o",
 	)
-	def script_dumpDiagnostics(self, gesture):
+	def script_openRecordingsFolder(self, gesture):
 		del gesture
-		try:
-			path = self._writeDiagnosticReport("manual-dump")
-			self._speak(_("Reporte de depuración generado: %s") % path.name)
-			ui.browseableMessage(
-				path.read_text(encoding="utf-8", errors="replace"),
-				_("MLRecorder - Reporte de depuración"),
-				isHtml=False,
-			)
-		except Exception as exc:
-			self._speak(_("No se pudo generar el reporte: %s") % exc)
+		path = self._defaultOutputDir()
+		if os.path.exists(path):
+			try:
+				os.startfile(path)
+				self._speak(_("Abriendo carpeta de grabaciones."))
+			except Exception as exc:
+				self._speak(_("Error al abrir carpeta: %s") % exc)
+		else:
+			self._speak(_("La carpeta de grabaciones no existe."))
