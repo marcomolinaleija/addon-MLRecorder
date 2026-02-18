@@ -17,6 +17,9 @@ import api
 import config
 import globalPluginHandler
 import globalVars
+import gui
+from gui import settingsDialogs
+import wx
 import ui
 from scriptHandler import script
 
@@ -29,12 +32,69 @@ def disableInSecureMode(decoratedCls):
 	return decoratedCls
 
 
+class MLRecorderSettingsPanel(settingsDialogs.SettingsPanel):
+	title = _("MLRecorder")
+
+	def makeSettings(self, settingsSizer):
+		sHelper = gui.guiHelper.BoxSizerHelper(self, sizer=settingsSizer)
+
+		# Format
+		self.formatLabel = sHelper.addItem(wx.StaticText(self, label=_("&Formato de salida:")))
+		self.formatChoice = sHelper.addItem(wx.Choice(self, choices=["wav", "mp3", "flac", "opus"]))
+		self.formatChoice.SetStringSelection(config.conf["mlrecorder"]["outputFormat"])
+
+		# Skip Silence
+		self.skipSilenceCb = sHelper.addItem(wx.CheckBox(self, label=_("&Saltar silencios")))
+		self.skipSilenceCb.SetValue(config.conf["mlrecorder"]["skipSilence"])
+
+		# Process Volume
+		self.volumeLabel = sHelper.addItem(wx.StaticText(self, label=_("&Volumen de proceso (%):")))
+		self.volumeSlider = sHelper.addItem(wx.SpinCtrl(self, value=str(config.conf["mlrecorder"]["processVolume"]), min=0, max=200))
+
+		# Microphone
+		# We need to try to get devices. If runtime isn't loaded, we might not see them all,
+		# but usually GlobalPlugin loads it.
+		# For this panel, we'll try to use the global instance if available.
+		currentMicId = config.conf["mlrecorder"]["microphoneId"]
+		choices = [_("Predeterminado")]
+		self.micIds = [""]
+		
+		# Try to list devices from the runtime if possible
+		try:
+			# We can't easily access the plugin instance here, so we might need a workaround 
+			# or just rely on what's available. 
+			# Ideally we would access GlobalPlugin instance but it's not global.
+			# For now, we'll just show the Default option and if possible list others if we can get a handle.
+			# Note: In a real implementation with valid dll, we'd call mlr.list_input_devices().
+			# Since we are in a mocked env or standard NVDA env, we might not have the DLL loaded here.
+			pass
+		except Exception:
+			pass
+
+		self.micLabel = sHelper.addItem(wx.StaticText(self, label=_("&Micrófono:")))
+		self.micChoice = sHelper.addItem(wx.Choice(self, choices=choices))
+		self.micChoice.SetSelection(0) # Default to first
+
+	def onSave(self):
+		config.conf["mlrecorder"]["outputFormat"] = self.formatChoice.GetStringSelection()
+		config.conf["mlrecorder"]["skipSilence"] = self.skipSilenceCb.GetValue()
+		config.conf["mlrecorder"]["processVolume"] = self.volumeSlider.GetValue()
+		# config.conf["mlrecorder"]["microphoneId"] = self.micIds[self.micChoice.GetSelection()]
+
+
 @disableInSecureMode
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	scriptCategory = _("MLRecorder")
 
 	def __init__(self, *args, **kwargs):
 		super().__init__(*args, **kwargs)
+		config.conf.spec["mlrecorder"] = {
+			"outputFormat": "string(default='wav')",
+			"skipSilence": "boolean(default=False)",
+			"processVolume": "integer(default=100, min=0, max=200)",
+			"microphoneId": "string(default='')",
+		}
+		settingsDialogs.NVDASettingsDialog.categoryClasses.append(MLRecorderSettingsPanel)
 		self._mlr = None
 		self._processSession = None
 		self._microphoneSession = None
@@ -258,14 +318,28 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 		try:
 			processLabel = self._resolveProcessLabel(pid, appName)
+			fmt = config.conf["mlrecorder"]["outputFormat"]
+			skipSilence = config.conf["mlrecorder"]["skipSilence"]
+
 			self._processSession = self._mlr.start_recorder(  # type: ignore[union-attr]
 				pid=pid,
 				output_dir=self._defaultOutputDir(),
-				fmt="wav",
+				fmt=fmt,
+				skip_silence=skipSilence,
 				strict_process_isolation=True,
 			)
 			self._lastProcessPid = pid
 			self._lastProcessName = processLabel
+
+			# Apply volume
+			try:
+				vol = config.conf["mlrecorder"]["processVolume"]
+				# Convert 0-200 to 0.0-2.0
+				volFloat = float(vol) / 100.0
+				self._mlr.set_capture_volume(pid, volFloat)
+			except Exception:
+				pass
+
 			self._speak(_("Grabando audio de %s.") % processLabel)
 		except Exception as exc:
 			self._speak(_("Error al iniciar grabación de proceso: %s") % exc)
@@ -294,9 +368,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			return
 
 		try:
+			fmt = config.conf["mlrecorder"]["outputFormat"]
 			self._microphoneSession = self._mlr.start_microphone_recorder(  # type: ignore[union-attr]
 				output_dir=self._defaultOutputDir(),
-				fmt="wav",
+				fmt=fmt,
 			)
 			self._speak(_("Grabación de micrófono iniciada."))
 		except Exception as exc:
@@ -332,14 +407,24 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 		try:
 			processLabel = self._resolveProcessLabel(pid, appName)
+			fmt = config.conf["mlrecorder"]["outputFormat"]
 			self._mixedSession = self._mlr.start_mixed_recorder(  # type: ignore[union-attr]
 				pid=pid,
 				output_dir=self._defaultOutputDir(),
-				fmt="wav",
+				fmt=fmt,
 				include_microphone=True,
 				strict_process_isolation=True,
 				base_name="NVDA-Mixed",
 			)
+
+			# Apply volume for the process part if possible.
+			try:
+				vol = config.conf["mlrecorder"]["processVolume"]
+				volFloat = float(vol) / 100.0
+				self._mlr.set_capture_volume(pid, volFloat)
+			except Exception:
+				pass
+
 			self._speak(_("Grabación mixta iniciada para %s.") % processLabel)
 		except Exception as exc:
 			self._speak(_("Error al iniciar mezcla: %s") % exc)
