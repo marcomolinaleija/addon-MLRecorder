@@ -177,14 +177,17 @@ class MLRecorder:
         self._dll.mlr_set_capture_volume.argtypes = [ctypes.c_uint32, ctypes.c_float]
         self._dll.mlr_set_capture_volume.restype = ctypes.c_int
 
-        self._dll.mlr_pause_capture.argtypes = [ctypes.c_uint32]
-        self._dll.mlr_pause_capture.restype = ctypes.c_int
+        try:
+            self._dll.mlr_pause_capture.argtypes = [ctypes.c_uint32]
+            self._dll.mlr_pause_capture.restype = ctypes.c_int
 
-        self._dll.mlr_resume_capture.argtypes = [ctypes.c_uint32]
-        self._dll.mlr_resume_capture.restype = ctypes.c_int
+            self._dll.mlr_resume_capture.argtypes = [ctypes.c_uint32]
+            self._dll.mlr_resume_capture.restype = ctypes.c_int
 
-        self._dll.mlr_is_paused.argtypes = [ctypes.c_uint32]
-        self._dll.mlr_is_paused.restype = ctypes.c_int
+            self._dll.mlr_is_paused.argtypes = [ctypes.c_uint32]
+            self._dll.mlr_is_paused.restype = ctypes.c_int
+        except AttributeError:
+            pass
 
         self._dll.mlr_get_active_session_count.argtypes = []
         self._dll.mlr_get_active_session_count.restype = ctypes.c_int
@@ -215,14 +218,17 @@ class MLRecorder:
         self._dll.mlr_stop_all_microphone_captures.argtypes = []
         self._dll.mlr_stop_all_microphone_captures.restype = None
 
-        self._dll.mlr_pause_microphone_capture.argtypes = [ctypes.c_char_p]
-        self._dll.mlr_pause_microphone_capture.restype = ctypes.c_int
+        try:
+            self._dll.mlr_pause_microphone_capture.argtypes = [ctypes.c_char_p]
+            self._dll.mlr_pause_microphone_capture.restype = ctypes.c_int
 
-        self._dll.mlr_resume_microphone_capture.argtypes = [ctypes.c_char_p]
-        self._dll.mlr_resume_microphone_capture.restype = ctypes.c_int
+            self._dll.mlr_resume_microphone_capture.argtypes = [ctypes.c_char_p]
+            self._dll.mlr_resume_microphone_capture.restype = ctypes.c_int
 
-        self._dll.mlr_is_microphone_paused.argtypes = [ctypes.c_char_p]
-        self._dll.mlr_is_microphone_paused.restype = ctypes.c_int
+            self._dll.mlr_is_microphone_paused.argtypes = [ctypes.c_char_p]
+            self._dll.mlr_is_microphone_paused.restype = ctypes.c_int
+        except AttributeError:
+            pass
 
         self._dll.mlr_enable_mixed_recording_to_file.argtypes = [
             ctypes.c_char_p,
