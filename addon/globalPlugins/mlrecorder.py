@@ -67,7 +67,7 @@ class MLRecorderSettingsPanel(settingsDialogs.SettingsPanel):
 				sys.path.insert(0, str(_libDir))
 			import mlrecorder as _mlr
 			_mlr.initialize(dll_path=str(_dllPath))
-			for _dev in _mlr.list_input_devices():
+			for _dev in _mlr.list_microphones():
 				choices.append(_dev.friendly_name)
 				self.micIds.append(_dev.device_id)
 		except Exception:
