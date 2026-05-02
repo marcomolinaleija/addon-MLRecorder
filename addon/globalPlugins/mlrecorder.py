@@ -103,6 +103,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._microphoneSession = None
 		self._systemSession = None
 		self._mixedSession = None
+		self._lastProcessPid: Optional[int] = None
+		self._lastProcessName = ""
 		self.toggling = False
 
 	def getScript(self, gesture):
@@ -254,7 +256,47 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			return False
 
 		self._mlr = mlr
+		try:
+			mlr.on_session_ended(self._onSessionEndedBackground)
+		except Exception:
+			pass
 		return True
+
+	def _onSessionEndedBackground(self, session_id: int) -> None:
+		# Fired from capture thread — marshal to wx/NVDA main thread.
+		wx.CallAfter(self._onSessionEndedMain, session_id)
+
+	def _onSessionEndedMain(self, session_id: int) -> None:
+		# Identify which session ended and clean up.
+		MIC_SESSION_BASE = 0xFFFF0000
+
+		if self._processSession is not None and self._lastProcessPid == session_id:
+			name = self._lastProcessName or str(session_id)
+			self._processSession = None
+			self._lastProcessPid = None
+			self._lastProcessName = ""
+			self._speak(_("Grabación de %s terminada inesperadamente.") % name)
+
+		elif self._systemSession is not None and session_id == 0:
+			self._systemSession = None
+			self._speak(_("Grabación de sistema terminada inesperadamente."))
+
+		elif self._microphoneSession is not None and session_id >= MIC_SESSION_BASE:
+			self._microphoneSession = None
+			self._speak(_("Grabación de micrófono terminada inesperadamente."))
+
+		elif self._mixedSession is not None:
+			pid = getattr(self._mixedSession, "process_id", -1)
+			if session_id == pid or session_id >= MIC_SESSION_BASE:
+				self._mixedSession = None
+				self._speak(_("Grabación mixta terminada inesperadamente."))
+
+	def _format_stats(self, stats) -> str:
+		secs = int(stats.duration_seconds)
+		mins, secs_rem = divmod(secs, 60)
+		mb = stats.bytes_written / (1024 * 1024)
+		time_str = _("%dm %ds") % (mins, secs_rem) if mins > 0 else _("%ds") % secs_rem
+		return _("%s, %.1f MB") % (time_str, mb)
 
 	def _getFocusProcess(self) -> Tuple[int, str]:
 		focus = api.getFocusObject()
@@ -329,7 +371,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	@script(
 		description=_("Alterna grabación del proceso enfocado."),
 		category=_("MLRecorder"),
-		gesture="kb:NVDA+shift+r",
 	)
 	def script_toggleFocusedProcessRecording(self, gesture):
 		del gesture
@@ -391,7 +432,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	@script(
 		description=_("Alterna grabación de micrófono."),
 		category=_("MLRecorder"),
-		gesture="kb:NVDA+shift+m",
 	)
 	def script_toggleMicrophoneRecording(self, gesture):
 		del gesture
@@ -424,7 +464,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	@script(
 		description=_("Alterna grabación del audio del sistema (escritorio)."),
 		category=_("MLRecorder"),
-		gesture="kb:NVDA+shift+g",
 	)
 	def script_toggleSystemRecording(self, gesture):
 		del gesture
@@ -464,7 +503,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	@script(
 		description=_("Alterna grabación mixta de proceso enfocado más micrófono."),
 		category=_("MLRecorder"),
-		gesture="kb:NVDA+shift+x",
 	)
 	def script_toggleMixedRecording(self, gesture):
 		del gesture
@@ -556,39 +594,64 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	@script(
 		description=_("Reporta el estado actual de las grabaciones."),
 		category=_("MLRecorder"),
-		gesture="kb:NVDA+shift+i",
 	)
 	def script_reportStatus(self, gesture):
 		del gesture
 		msgs = []
+
 		if self._processSession:
 			try:
 				state = _("pausado") if self._processSession.is_paused() else _("activo")
+				stats_str = self._format_stats(self._processSession.stats())
 			except Exception:
 				state = _("activo")
-			msgs.append(_("Proceso %s: %s") % (state, self._lastProcessName))
+				stats_str = ""
+			label = _("Proceso %s: %s") % (state, self._lastProcessName)
+			if stats_str:
+				label += ", " + stats_str
+			msgs.append(label)
+
 		if self._systemSession:
 			try:
 				state = _("pausado") if self._systemSession.is_paused() else _("activo")
+				stats_str = self._format_stats(self._systemSession.stats())
 			except Exception:
 				state = _("activo")
-			msgs.append(_("Sistema %s") % state)
+				stats_str = ""
+			label = _("Sistema %s") % state
+			if stats_str:
+				label += ", " + stats_str
+			msgs.append(label)
+
 		if self._mixedSession:
 			try:
 				paused = self._mlr.is_recorder_paused(self._mixedSession.process_id)
 				state = _("pausada") if paused else _("activa")
+				stats_str = self._format_stats(
+					self._mlr.get_recorder_stats(self._mixedSession.process_id)
+				)
 			except Exception:
 				state = _("activa")
+				stats_str = ""
 			if getattr(self._mixedSession, "process_id", -1) == 0:
-				msgs.append(_("Mezcla sistema+mic %s") % state)
+				label = _("Mezcla sistema+mic %s") % state
 			else:
-				msgs.append(_("Mezcla proceso+mic %s") % state)
+				label = _("Mezcla proceso+mic %s") % state
+			if stats_str:
+				label += ", " + stats_str
+			msgs.append(label)
+
 		if self._microphoneSession:
 			try:
 				state = _("pausado") if self._microphoneSession.is_paused() else _("activo")
+				stats_str = self._format_stats(self._microphoneSession.stats())
 			except Exception:
 				state = _("activo")
-			msgs.append(_("Micrófono %s") % state)
+				stats_str = ""
+			label = _("Micrófono %s") % state
+			if stats_str:
+				label += ", " + stats_str
+			msgs.append(label)
 
 		if not msgs:
 			self._speak(_("No hay grabaciones activas."))
@@ -598,7 +661,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	@script(
 		description=_("Pausa o reanuda la grabación activa."),
 		category=_("MLRecorder"),
-		gesture="kb:NVDA+shift+p",
 	)
 	def script_togglePause(self, gesture):
 		del gesture
@@ -741,7 +803,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	@script(
 		description=_("Activa la capa de comandos de MLRecorder"),
 		category=_("MLRecorder"),
-		gesture="kb:NVDA+alt+a",
 	)
 	def script_commandLayer(self, gesture):
 		if self.toggling:
