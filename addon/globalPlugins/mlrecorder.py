@@ -51,34 +51,38 @@ class MLRecorderSettingsPanel(settingsDialogs.SettingsPanel):
 		self.volumeSlider = sHelper.addItem(wx.SpinCtrl(self, value=str(config.conf["mlrecorder"]["processVolume"]), min=0, max=200))
 
 		# Microphone
-		# We need to try to get devices. If runtime isn't loaded, we might not see them all,
-		# but usually GlobalPlugin loads it.
-		# For this panel, we'll try to use the global instance if available.
 		currentMicId = config.conf["mlrecorder"]["microphoneId"]
 		choices = [_("Predeterminado")]
 		self.micIds = [""]
-		
-		# Try to list devices from the runtime if possible
+
 		try:
-			# We can't easily access the plugin instance here, so we might need a workaround 
-			# or just rely on what's available. 
-			# Ideally we would access GlobalPlugin instance but it's not global.
-			# For now, we'll just show the Default option and if possible list others if we can get a handle.
-			# Note: In a real implementation with valid dll, we'd call mlr.list_input_devices().
-			# Since we are in a mocked env or standard NVDA env, we might not have the DLL loaded here.
-			pass
+			import struct
+			import sys
+			from pathlib import Path as _Path
+			_addonDir = _Path(__file__).resolve().parents[1]
+			_arch = "x86" if (8 * struct.calcsize("P")) == 32 else "x64"
+			_libDir = _addonDir / "lib"
+			_dllPath = _addonDir / "lib" / "mlrecorder" / "bin" / _arch / "mlrecorder_core.dll"
+			if str(_libDir) not in sys.path:
+				sys.path.insert(0, str(_libDir))
+			import mlrecorder as _mlr
+			_mlr.initialize(dll_path=str(_dllPath))
+			for _dev in _mlr.list_input_devices():
+				choices.append(_dev.friendly_name)
+				self.micIds.append(_dev.device_id)
 		except Exception:
 			pass
 
 		self.micLabel = sHelper.addItem(wx.StaticText(self, label=_("&Micrófono:")))
 		self.micChoice = sHelper.addItem(wx.Choice(self, choices=choices))
-		self.micChoice.SetSelection(0) # Default to first
+		selectedIndex = self.micIds.index(currentMicId) if currentMicId in self.micIds else 0
+		self.micChoice.SetSelection(selectedIndex)
 
 	def onSave(self):
 		config.conf["mlrecorder"]["outputFormat"] = self.formatChoice.GetStringSelection()
 		config.conf["mlrecorder"]["skipSilence"] = self.skipSilenceCb.GetValue()
 		config.conf["mlrecorder"]["processVolume"] = self.volumeSlider.GetValue()
-		# config.conf["mlrecorder"]["microphoneId"] = self.micIds[self.micChoice.GetSelection()]
+		config.conf["mlrecorder"]["microphoneId"] = self.micIds[self.micChoice.GetSelection()]
 
 
 @disableInSecureMode
