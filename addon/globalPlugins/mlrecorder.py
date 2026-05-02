@@ -1,5 +1,5 @@
-# MLRecorder add-on for NVDA.
-# Copyright (C) 2026
+# MLRecorder: complemento para NVDA
+# Copyright (C) 2026 Marco Leija <marcoleija@marco-ml.com>
 
 from __future__ import annotations
 
@@ -396,6 +396,65 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self._speak(_("Error al iniciar mezcla: %s") % exc)
 
 	@script(
+		description=_("Pausa o reanuda la grabación activa de MLRecorder."),
+		category=_("MLRecorder"),
+		gesture="kb:NVDA+shift+p",
+	)
+	def script_togglePause(self, gesture):
+		del gesture
+		if not self._ensureRuntime():
+			return
+
+		if self._processSession is not None:
+			try:
+				if self._processSession.is_paused():
+					self._processSession.resume()
+					self._speak(_("Grabación de proceso reanudada."))
+				else:
+					self._processSession.pause()
+					self._speak(_("Grabación de proceso pausada."))
+			except Exception as exc:
+				self._speak(_("Error al alternar pausa: %s") % exc)
+			return
+
+		if self._microphoneSession is not None:
+			try:
+				if self._microphoneSession.is_paused():
+					self._microphoneSession.resume()
+					self._speak(_("Grabación de micrófono reanudada."))
+				else:
+					self._microphoneSession.pause()
+					self._speak(_("Grabación de micrófono pausada."))
+			except Exception as exc:
+				self._speak(_("Error al alternar pausa del micrófono: %s") % exc)
+			return
+
+		if self._mixedSession is not None:
+			try:
+				paused = self._mlr.is_recorder_paused(self._mixedSession.process_id)
+				if paused:
+					self._mlr.resume_recorder(self._mixedSession.process_id)
+					if self._mixedSession.microphone_device_id:
+						try:
+							self._mlr.resume_microphone(self._mixedSession.microphone_device_id)
+						except Exception:
+							pass
+					self._speak(_("Grabación mixta reanudada."))
+				else:
+					self._mlr.pause_recorder(self._mixedSession.process_id)
+					if self._mixedSession.microphone_device_id:
+						try:
+							self._mlr.pause_microphone(self._mixedSession.microphone_device_id)
+						except Exception:
+							pass
+					self._speak(_("Grabación mixta pausada."))
+			except Exception as exc:
+				self._speak(_("Error al alternar pausa de mezcla: %s") % exc)
+			return
+
+		self._speak(_("No hay grabación activa."))
+
+	@script(
 		description=_("Detiene todas las grabaciones activas de MLRecorder."),
 		category=_("MLRecorder"),
 		gesture="kb:NVDA+shift+s",
@@ -414,11 +473,24 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		del gesture
 		parts = []
 		if self._processSession is not None:
-			parts.append(_("proceso activo"))
+			try:
+				label = _("proceso pausado") if self._processSession.is_paused() else _("proceso activo")
+			except Exception:
+				label = _("proceso activo")
+			parts.append(label)
 		if self._microphoneSession is not None:
-			parts.append(_("micrófono activo"))
+			try:
+				label = _("micrófono pausado") if self._microphoneSession.is_paused() else _("micrófono activo")
+			except Exception:
+				label = _("micrófono activo")
+			parts.append(label)
 		if self._mixedSession is not None:
-			parts.append(_("mezcla activa"))
+			try:
+				paused = self._mlr.is_recorder_paused(self._mixedSession.process_id)
+				label = _("mezcla pausada") if paused else _("mezcla activa")
+			except Exception:
+				label = _("mezcla activa")
+			parts.append(label)
 		if not parts:
 			parts.append(_("sin grabaciones activas"))
 		self._speak(", ".join(parts))
