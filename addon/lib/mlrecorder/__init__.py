@@ -7,12 +7,15 @@ from .core import (  # noqa: F401
     MLRecorder,
     MLRecorderError,
     ProcessInfo,
+    SessionStats,
 )
 from .simple import (  # noqa: F401
     MicrophoneSession,
     MixedRecorderSession,
     RecorderSession,
     active_session_count,
+    get_microphone_stats,
+    get_recorder_stats,
     initialize,
     is_microphone_paused,
     is_recorder_paused,
@@ -20,6 +23,7 @@ from .simple import (  # noqa: F401
     list_active_processes,
     list_microphones,
     list_processes,
+    on_session_ended,
     pause_microphone,
     pause_recorder,
     resume_microphone,

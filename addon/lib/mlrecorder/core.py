@@ -2,7 +2,7 @@ import ctypes
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 
 FORMAT_WAV = 0
@@ -11,6 +11,24 @@ FORMAT_OPUS = 2
 FORMAT_FLAC = 3
 
 RESULT_OK = 0
+
+
+@dataclass
+class SessionStats:
+    bytes_written: int
+    duration_seconds: float
+    is_paused: bool
+
+
+class _CSessionStats(ctypes.Structure):
+    _fields_ = [
+        ("bytes_written", ctypes.c_uint64),
+        ("duration_seconds", ctypes.c_double),
+        ("is_paused", ctypes.c_int),
+    ]
+
+
+_SessionEndedCallback = ctypes.CFUNCTYPE(None, ctypes.c_uint32, ctypes.c_void_p)
 
 
 @dataclass
@@ -62,6 +80,7 @@ class MLRecorder:
 
         self._dll_path = self._resolve_dll_path(dll_path)
         self._dll_dir_handles = []
+        self._session_ended_cb_ref = None  # prevent GC of ctypes callback
         self._prepare_dll_search_path(self._dll_path)
         self._dll = ctypes.WinDLL(str(self._dll_path))
         self._configure_signatures()
@@ -191,6 +210,15 @@ class MLRecorder:
 
         self._dll.mlr_get_active_session_count.argtypes = []
         self._dll.mlr_get_active_session_count.restype = ctypes.c_int
+
+        self._dll.mlr_set_session_ended_callback.argtypes = [_SessionEndedCallback, ctypes.c_void_p]
+        self._dll.mlr_set_session_ended_callback.restype = None
+
+        self._dll.mlr_get_session_stats.argtypes = [ctypes.c_uint32, ctypes.POINTER(_CSessionStats)]
+        self._dll.mlr_get_session_stats.restype = ctypes.c_int
+
+        self._dll.mlr_get_microphone_stats.argtypes = [ctypes.c_char_p, ctypes.POINTER(_CSessionStats)]
+        self._dll.mlr_get_microphone_stats.restype = ctypes.c_int
 
         self._dll.mlr_start_microphone_capture_to_file.argtypes = [
             ctypes.c_char_p,
@@ -393,6 +421,34 @@ class MLRecorder:
         code = self._dll.mlr_get_active_session_count()
         self._raise_if_error(code, "mlr_get_active_session_count failed")
         return int(code)
+
+    def set_session_ended_callback(self, fn: Optional[Callable[[int, str], None]]) -> None:
+        """Register fn(session_id, reason) called when a session ends unexpectedly.
+        Called from a background thread — do not call mlrecorder API inside it.
+        Pass None to clear."""
+        if fn is None:
+            self._dll.mlr_set_session_ended_callback(None, None)
+            self._session_ended_cb_ref = None
+        else:
+            def _wrapper(session_id: int, _user_data) -> None:
+                fn(int(session_id))
+            cb = _SessionEndedCallback(_wrapper)
+            self._session_ended_cb_ref = cb
+            self._dll.mlr_set_session_ended_callback(cb, None)
+
+    def get_session_stats(self, process_id: int) -> SessionStats:
+        raw = _CSessionStats()
+        code = self._dll.mlr_get_session_stats(ctypes.c_uint32(process_id), ctypes.byref(raw))
+        self._raise_if_error(code, "mlr_get_session_stats failed")
+        return SessionStats(int(raw.bytes_written), float(raw.duration_seconds), bool(raw.is_paused))
+
+    def get_microphone_stats(self, input_device_id: Optional[str] = None) -> SessionStats:
+        raw = _CSessionStats()
+        code = self._dll.mlr_get_microphone_stats(
+            self._encode_optional(input_device_id), ctypes.byref(raw)
+        )
+        self._raise_if_error(code, "mlr_get_microphone_stats failed")
+        return SessionStats(int(raw.bytes_written), float(raw.duration_seconds), bool(raw.is_paused))
 
     def start_microphone_capture_to_file(
         self,

@@ -13,6 +13,7 @@ from .core import (
     MLRecorder,
     MLRecorderError,
     ProcessInfo,
+    SessionStats,
 )
 
 
@@ -274,6 +275,20 @@ def is_recorder_paused(pid: int) -> bool:
     return initialize().is_capture_paused(pid)
 
 
+def get_recorder_stats(pid: int) -> SessionStats:
+    return initialize().get_session_stats(pid)
+
+
+def get_microphone_stats(input_device_id: Optional[str] = None) -> SessionStats:
+    return initialize().get_microphone_stats(input_device_id)
+
+
+def on_session_ended(fn: Optional[callable]) -> None:
+    """Register fn(session_id) called when any session ends unexpectedly.
+    Called from a background thread. Pass None to clear."""
+    initialize().set_session_ended_callback(fn)
+
+
 def pause_microphone(input_device_id: Optional[str] = None) -> None:
     initialize().pause_microphone_capture(input_device_id)
 
@@ -312,6 +327,9 @@ class RecorderSession:
     def is_paused(self) -> bool:
         return is_recorder_paused(self.process_id)
 
+    def stats(self) -> SessionStats:
+        return get_recorder_stats(self.process_id)
+
     def __enter__(self) -> "RecorderSession":
         return self
 
@@ -337,6 +355,9 @@ class MicrophoneSession:
 
     def is_paused(self) -> bool:
         return is_microphone_paused(self.device_id)
+
+    def stats(self) -> SessionStats:
+        return get_microphone_stats(self.device_id)
 
     def __enter__(self) -> "MicrophoneSession":
         return self
