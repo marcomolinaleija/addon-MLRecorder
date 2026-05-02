@@ -3,27 +3,42 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" type="text/css" href="../style.css" media="screen">
-<title>MLRecorder 0.1.2</title>
+<title>MLRecorder 2026.02.18</title>
 </head>
 <body>
-<h1>MLRecorder for NVDA</h1>
-<p>MLRecorder adds global NVDA commands to record:</p>
+<h1>MLRecorder para NVDA</h1>
+<p>MLRecorder agrega atajos globales de NVDA para grabar:</p>
 <ul>
-<li>focused process audio,</li>
-<li>microphone only,</li>
-<li>mixed focused process + microphone.</li>
+<li>Audio del proceso enfocado.</li>
+<li>Audio del sistema (lo que se escucha en los altavoces).</li>
+<li>Micrófono.</li>
+<li>Mezcla del proceso enfocado + micrófono.</li>
+<li>Mezcla del sistema + micrófono.</li>
 </ul>
-<h2>Default commands</h2>
+<h2>Atajos Globales</h2>
 <ul>
-<li>NVDA+Shift+R: toggle focused process recording (start/stop).</li>
-<li>NVDA+Shift+M: toggle microphone recording (start/stop).</li>
-<li>NVDA+Shift+X: toggle mixed process + microphone recording (start/stop).</li>
-<li>NVDA+Shift+S: stop all active recordings.</li>
-<li>NVDA+Shift+I: report current recording status.</li>
+<li><strong>NVDA+Shift+R</strong>: Alternar grabación del proceso enfocado.</li>
+<li><strong>NVDA+Shift+G</strong>: Alternar grabación del sistema (escritorio).</li>
+<li><strong>NVDA+Shift+M</strong>: Alternar grabación de micrófono.</li>
+<li><strong>NVDA+Shift+X</strong>: Alternar grabación mixta (Proceso + Micrófono).</li>
+<li><strong>NVDA+Shift+H</strong>: Alternar grabación mixta (Sistema + Micrófono).</li>
+<li><strong>NVDA+Shift+I</strong>: Reportar estado de grabaciones.</li>
+<li><strong>NVDA+Shift+O</strong>: Abrir carpeta de grabaciones.</li>
+<li><strong>NVDA+Alt+A</strong>: Activar capa de comandos.</li>
 </ul>
-<p>Recordings are saved in:</p>
+<h2>Capa de Comandos (NVDA+Alt+A)</h2>
+<p>Una vez activada la capa (oirás un pitido), pulsa una de las siguientes teclas:</p>
 <ul>
-<li><code>%userprofile%\Documents\NVDA_MLRecorder</code></li>
+<li><strong>p</strong>: Alternar grabación de proceso.</li>
+<li><strong>Alt+p</strong>: Alternar grabación mixta (Proceso + Mic).</li>
+<li><strong>s</strong>: Alternar grabación de sistema.</li>
+<li><strong>Alt+s</strong>: Alternar grabación mixta (Sistema + Mic).</li>
+<li><strong>m</strong>: Alternar grabación de micrófono.</li>
+<li><strong>d</strong>: Detener grabación activa.</li>
+<li><strong>Alt+d</strong>: Detener todas las grabaciones.</li>
+<li><strong>i</strong>: Reportar estado.</li>
+<li><strong>o</strong>: Abrir carpeta de grabaciones.</li>
 </ul>
+<p>Las grabaciones se guardan en: <code>%userprofile%\Documents\NVDA_MLRecorder</code></p>
 </body>
 </html>

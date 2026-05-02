@@ -1,14 +1,12 @@
-# MLRecorder: complemento para NVDA
-# Copyright (C) 2026 Marco Leija <marcoleija@marco-ml.com>
+# MLRecorder add-on for NVDA.
+# Copyright (C) 2026
 
 from __future__ import annotations
 
 import ctypes
-import datetime
-import os
 import struct
+import os
 import sys
-import traceback
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -17,7 +15,11 @@ import api
 import config
 import globalPluginHandler
 import globalVars
+import gui
+from gui import settingsDialogs
+import wx
 import ui
+import tones
 from scriptHandler import script
 
 addonHandler.initTranslation()
@@ -29,19 +31,106 @@ def disableInSecureMode(decoratedCls):
 	return decoratedCls
 
 
+class MLRecorderSettingsPanel(settingsDialogs.SettingsPanel):
+	title = _("MLRecorder")
+
+	def makeSettings(self, settingsSizer):
+		sHelper = gui.guiHelper.BoxSizerHelper(self, sizer=settingsSizer)
+
+		# Format
+		self.formatLabel = sHelper.addItem(wx.StaticText(self, label=_("&Formato de salida:")))
+		self.formatChoice = sHelper.addItem(wx.Choice(self, choices=["wav", "mp3", "flac", "opus"]))
+		self.formatChoice.SetStringSelection(config.conf["mlrecorder"]["outputFormat"])
+
+		# Skip Silence
+		self.skipSilenceCb = sHelper.addItem(wx.CheckBox(self, label=_("&Saltar silencios")))
+		self.skipSilenceCb.SetValue(config.conf["mlrecorder"]["skipSilence"])
+
+		# Process Volume
+		self.volumeLabel = sHelper.addItem(wx.StaticText(self, label=_("&Volumen de proceso (%):")))
+		self.volumeSlider = sHelper.addItem(wx.SpinCtrl(self, value=str(config.conf["mlrecorder"]["processVolume"]), min=0, max=200))
+
+		# Microphone
+		# We need to try to get devices. If runtime isn't loaded, we might not see them all,
+		# but usually GlobalPlugin loads it.
+		# For this panel, we'll try to use the global instance if available.
+		currentMicId = config.conf["mlrecorder"]["microphoneId"]
+		choices = [_("Predeterminado")]
+		self.micIds = [""]
+		
+		# Try to list devices from the runtime if possible
+		try:
+			# We can't easily access the plugin instance here, so we might need a workaround 
+			# or just rely on what's available. 
+			# Ideally we would access GlobalPlugin instance but it's not global.
+			# For now, we'll just show the Default option and if possible list others if we can get a handle.
+			# Note: In a real implementation with valid dll, we'd call mlr.list_input_devices().
+			# Since we are in a mocked env or standard NVDA env, we might not have the DLL loaded here.
+			pass
+		except Exception:
+			pass
+
+		self.micLabel = sHelper.addItem(wx.StaticText(self, label=_("&Micrófono:")))
+		self.micChoice = sHelper.addItem(wx.Choice(self, choices=choices))
+		self.micChoice.SetSelection(0) # Default to first
+
+	def onSave(self):
+		config.conf["mlrecorder"]["outputFormat"] = self.formatChoice.GetStringSelection()
+		config.conf["mlrecorder"]["skipSilence"] = self.skipSilenceCb.GetValue()
+		config.conf["mlrecorder"]["processVolume"] = self.volumeSlider.GetValue()
+		# config.conf["mlrecorder"]["microphoneId"] = self.micIds[self.micChoice.GetSelection()]
+
+
 @disableInSecureMode
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	scriptCategory = _("MLRecorder")
 
 	def __init__(self, *args, **kwargs):
 		super().__init__(*args, **kwargs)
+		config.conf.spec["mlrecorder"] = {
+			"outputFormat": "string(default='wav')",
+			"skipSilence": "boolean(default=False)",
+			"processVolume": "integer(default=100, min=0, max=200)",
+			"microphoneId": "string(default='')",
+		}
+		settingsDialogs.NVDASettingsDialog.categoryClasses.append(MLRecorderSettingsPanel)
 		self._mlr = None
 		self._processSession = None
 		self._microphoneSession = None
+		self._systemSession = None
 		self._mixedSession = None
+		self.toggling = False
+
+	def getScript(self, gesture):
+		if not self.toggling:
+			return super().getScript(gesture)
+		script = super().getScript(gesture)
+		if not script:
+			script = self.script_error
+		return self.finish(script)
+
+	def finish(self, script):
+		def wrapper(*args, **kwargs):
+			try:
+				script(*args, **kwargs)
+			finally:
+				self.deactivateLayer()
+		return wrapper
+
+	def deactivateLayer(self):
+		self.toggling = False
+		self.clearGestureBindings()
+		self.bindGestures(self.__gestures)
+
+	def script_error(self, gesture):
+		# Translators: Error message when no function is assigned to the pressed key in command layer
+		ui.message(_("Tecla no válida en la capa de comandos"))
+		# tones.beep(277.18, 110) # Optional beep
+		self._mixedSession = None
+		self._systemSession = None
 		self._lastProcessPid: Optional[int] = None
 		self._lastProcessName = ""
-		self._lastDiagnosticPath: Optional[Path] = None
+
 
 	def terminate(self):
 		self._stopAllSessions()
@@ -78,11 +167,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		output.mkdir(parents=True, exist_ok=True)
 		return str(output)
 
-	def _diagnosticDir(self) -> Path:
-		base = Path(config.getUserDefaultConfigPath())
-		diag = base / "mlrecorder-diagnostics"
-		diag.mkdir(parents=True, exist_ok=True)
-		return diag
 
 	def _runtimeArchFolder(self) -> str:
 		return "x86" if (8 * struct.calcsize("P")) == 32 else "x64"
@@ -138,50 +222,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		except Exception as exc:
 			return "error: %s" % exc
 
-	def _writeDiagnosticReport(self, reason: str, exc: Optional[Exception] = None) -> Path:
-		now = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-		reportPath = self._diagnosticDir() / ("mlrecorder-diag-%s.txt" % now)
-		self._lastDiagnosticPath = reportPath
-
-		binRoot = self._addonBinRoot()
-		selectedBinDir = self._selectedBinDir()
-		core, flac, ogg, opus = self._addonDllPaths(selectedBinDir)
-		lines = []
-		lines.append("MLRecorder NVDA diagnostic report")
-		lines.append("timestamp=%s" % datetime.datetime.now().isoformat())
-		lines.append("reason=%s" % reason)
-		lines.append("")
-		lines.append("python_version=%s" % sys.version.replace("\n", " "))
-		lines.append("python_executable=%s" % sys.executable)
-		lines.append("python_bitness=%s" % (8 * struct.calcsize("P")))
-		lines.append("PROCESSOR_ARCHITECTURE=%s" % os.environ.get("PROCESSOR_ARCHITECTURE", ""))
-		lines.append("PROCESSOR_ARCHITEW6432=%s" % os.environ.get("PROCESSOR_ARCHITEW6432", ""))
-		lines.append("MLRECORDER_DLL=%s" % os.environ.get("MLRECORDER_DLL", ""))
-		lines.append("addon_dir=%s" % self._addonDir())
-		lines.append("selected_runtime_arch=%s" % self._runtimeArchFolder())
-		lines.append("selected_bin_dir=%s" % selectedBinDir)
-		lines.append("bin_root=%s" % binRoot)
-		lines.append("bin_x86_exists=%s" % (binRoot / "x86").exists())
-		lines.append("bin_x64_exists=%s" % (binRoot / "x64").exists())
-		lines.append("")
-		lines.append("dll_checks:")
-
-		for dllPath in (core, flac, ogg, opus):
-			size = dllPath.stat().st_size if dllPath.exists() else 0
-			lines.append("  path=%s" % dllPath)
-			lines.append("    exists=%s" % dllPath.exists())
-			lines.append("    size=%s" % size)
-			lines.append("    pe_arch=%s" % self._peArchitecture(dllPath))
-			lines.append("    load_probe=%s" % self._probeLoad(dllPath))
-
-		if exc is not None:
-			lines.append("")
-			lines.append("exception=%s" % repr(exc))
-			lines.append("traceback:")
-			lines.append(traceback.format_exc())
-
-		reportPath.write_text("\n".join(lines), encoding="utf-8", errors="replace")
-		return reportPath
 
 	def _ensureRuntime(self) -> bool:
 		if self._mlr is not None:
@@ -206,9 +246,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			# Force addon-local DLL to avoid accidental MLRECORDER_DLL env overrides.
 			mlr.initialize(dll_path=str(dllPath))
 		except Exception as exc:
-			reportPath = self._writeDiagnosticReport("initialize-failed", exc=exc)
 			self._speak(_("No se pudo inicializar MLRecorder: %s") % exc)
-			self._speak(_("Se generó reporte de depuración en: %s") % reportPath.name)
 			return False
 
 		self._mlr = mlr
@@ -254,6 +292,13 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		return _("aplicación actual")
 
 	def _stopAllSessions(self):
+		if self._systemSession is not None:
+			try:
+				self._systemSession.stop()
+			except Exception:
+				pass
+			self._systemSession = None
+
 		if self._mixedSession is not None:
 			try:
 				self._mixedSession.stop()
@@ -278,11 +323,11 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self._lastProcessName = ""
 
 	@script(
-		description=_("Inicia grabación del proceso enfocado."),
+		description=_("Alterna grabación del proceso enfocado."),
 		category=_("MLRecorder"),
 		gesture="kb:NVDA+shift+r",
 	)
-	def script_startFocusedProcessRecording(self, gesture):
+	def script_toggleFocusedProcessRecording(self, gesture):
 		del gesture
 		if not self._ensureRuntime():
 			return
@@ -299,24 +344,42 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			return
 
 		if self._mixedSession is not None:
-			self._speak(_("Detén la sesión mixta antes de iniciar grabación de proceso."))
+			self._speak(_("La grabación MIXTA está activa. Deténla primero."))
+			return
+		if self._systemSession is not None:
+			self._speak(_("La grabación de SISTEMA está activa. Deténla primero."))
 			return
 
 		pid, appName = self._getFocusProcess()
+
 		if pid <= 0:
 			self._speak(_("No se pudo resolver el proceso enfocado."))
 			return
 
 		try:
 			processLabel = self._resolveProcessLabel(pid, appName)
+			fmt = config.conf["mlrecorder"]["outputFormat"]
+			skipSilence = config.conf["mlrecorder"]["skipSilence"]
+
 			self._processSession = self._mlr.start_recorder(  # type: ignore[union-attr]
 				pid=pid,
 				output_dir=self._defaultOutputDir(),
-				fmt="wav",
+				fmt=fmt,
+				skip_silence=skipSilence,
 				strict_process_isolation=True,
 			)
 			self._lastProcessPid = pid
 			self._lastProcessName = processLabel
+
+			# Apply volume
+			try:
+				vol = config.conf["mlrecorder"]["processVolume"]
+				# Convert 0-200 to 0.0-2.0
+				volFloat = float(vol) / 100.0
+				self._mlr.set_capture_volume(pid, volFloat)
+			except Exception:
+				pass
+
 			self._speak(_("Grabando audio de %s.") % processLabel)
 		except Exception as exc:
 			self._speak(_("Error al iniciar grabación de proceso: %s") % exc)
@@ -345,13 +408,54 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			return
 
 		try:
+			fmt = config.conf["mlrecorder"]["outputFormat"]
 			self._microphoneSession = self._mlr.start_microphone_recorder(  # type: ignore[union-attr]
 				output_dir=self._defaultOutputDir(),
-				fmt="wav",
+				fmt=fmt,
 			)
 			self._speak(_("Grabación de micrófono iniciada."))
 		except Exception as exc:
 			self._speak(_("Error al iniciar micrófono: %s") % exc)
+
+	@script(
+		description=_("Alterna grabación del audio del sistema (escritorio)."),
+		category=_("MLRecorder"),
+		gesture="kb:NVDA+shift+g",
+	)
+	def script_toggleSystemRecording(self, gesture):
+		del gesture
+		if not self._ensureRuntime():
+			return
+
+		if self._systemSession is not None:
+			try:
+				self._systemSession.stop()
+				self._systemSession = None
+				self._speak(_("Grabación de sistema detenida."))
+			except Exception as exc:
+				self._speak(_("Error al detener grabación de sistema: %s") % exc)
+			return
+
+		if self._processSession is not None or self._mixedSession is not None:
+			self._speak(_("Detén las sesiones de proceso o mixtas antes de iniciar grabación de sistema."))
+			return
+
+		try:
+			fmt = config.conf["mlrecorder"]["outputFormat"]
+			skipSilence = config.conf["mlrecorder"]["skipSilence"]
+
+			# pid=0 indicates system audio (desktop)
+			self._systemSession = self._mlr.start_recorder(  # type: ignore[union-attr]
+				pid=0,
+				output_dir=self._defaultOutputDir(),
+				fmt=fmt,
+				skip_silence=skipSilence,
+				strict_process_isolation=False,
+			)
+
+			self._speak(_("Grabación de sistema iniciada."))
+		except Exception as exc:
+			self._speak(_("Error al iniciar grabación de sistema: %s") % exc)
 
 	@script(
 		description=_("Alterna grabación mixta de proceso enfocado más micrófono."),
@@ -363,8 +467,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		if not self._ensureRuntime():
 			return
 
-		if self._processSession is not None or self._microphoneSession is not None:
-			self._speak(_("Detén sesiones activas antes de iniciar mezcla."))
+		if self._processSession is not None or self._microphoneSession is not None or self._systemSession is not None:
+			self._speak(_("Detén sesiones activas (proceso, micrófono o sistema) antes de iniciar mezcla."))
 			return
 
 		if self._mixedSession is not None:
@@ -383,20 +487,112 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 		try:
 			processLabel = self._resolveProcessLabel(pid, appName)
+			fmt = config.conf["mlrecorder"]["outputFormat"]
 			self._mixedSession = self._mlr.start_mixed_recorder(  # type: ignore[union-attr]
 				pid=pid,
 				output_dir=self._defaultOutputDir(),
-				fmt="wav",
+				fmt=fmt,
 				include_microphone=True,
 				strict_process_isolation=True,
 				base_name="NVDA-Mixed",
 			)
+
+			# Apply volume for the process part if possible.
+			try:
+				vol = config.conf["mlrecorder"]["processVolume"]
+				volFloat = float(vol) / 100.0
+				self._mlr.set_capture_volume(pid, volFloat)
+			except Exception:
+				pass
+
 			self._speak(_("Grabación mixta iniciada para %s.") % processLabel)
 		except Exception as exc:
 			self._speak(_("Error al iniciar mezcla: %s") % exc)
 
 	@script(
-		description=_("Pausa o reanuda la grabación activa de MLRecorder."),
+		description=_("Alterna grabación mixta de Sistema (Escritorio) más micrófono."),
+		category=_("MLRecorder"),
+	)
+	def script_toggleSystemMixedRecording(self, gesture):
+		del gesture
+		if not self._ensureRuntime():
+			return
+
+		if self._processSession is not None or self._microphoneSession is not None or self._systemSession is not None:
+			self._speak(_("Detén sesiones activas (proceso, micrófono o sistema) antes de iniciar mezcla de sistema."))
+			return
+
+		if self._mixedSession is not None:
+			# If it's a system mix, we stop it. If it's a process mix, we also stop it (toggle behavior).
+			try:
+				self._mixedSession.stop()
+				self._mixedSession = None
+				self._speak(_("Grabación mixta detenida."))
+			except Exception as exc:
+				self._speak(_("Error al detener mezcla: %s") % exc)
+			return
+
+		try:
+			fmt = config.conf["mlrecorder"]["outputFormat"]
+			# PID 0 is system audio
+			self._mixedSession = self._mlr.start_mixed_recorder(  # type: ignore[union-attr]
+				pid=0,
+				output_dir=self._defaultOutputDir(),
+				fmt=fmt,
+				include_microphone=True,
+				strict_process_isolation=False, # Not needed for system
+				base_name="System-Mixed",
+			)
+
+			self._speak(_("Grabación mixta de Sistema iniciada."))
+		except Exception as exc:
+			self._speak(_("Error al iniciar mezcla de sistema: %s") % exc)
+
+
+	@script(
+		description=_("Reporta el estado actual de las grabaciones."),
+		category=_("MLRecorder"),
+		gesture="kb:NVDA+shift+i",
+	)
+	def script_reportStatus(self, gesture):
+		del gesture
+		msgs = []
+		if self._processSession:
+			try:
+				state = _("pausado") if self._processSession.is_paused() else _("activo")
+			except Exception:
+				state = _("activo")
+			msgs.append(_("Proceso %s: %s") % (state, self._lastProcessName))
+		if self._systemSession:
+			try:
+				state = _("pausado") if self._systemSession.is_paused() else _("activo")
+			except Exception:
+				state = _("activo")
+			msgs.append(_("Sistema %s") % state)
+		if self._mixedSession:
+			try:
+				paused = self._mlr.is_recorder_paused(self._mixedSession.process_id)
+				state = _("pausada") if paused else _("activa")
+			except Exception:
+				state = _("activa")
+			if getattr(self._mixedSession, "process_id", -1) == 0:
+				msgs.append(_("Mezcla sistema+mic %s") % state)
+			else:
+				msgs.append(_("Mezcla proceso+mic %s") % state)
+		if self._microphoneSession:
+			try:
+				state = _("pausado") if self._microphoneSession.is_paused() else _("activo")
+			except Exception:
+				state = _("activo")
+			msgs.append(_("Micrófono %s") % state)
+
+		if not msgs:
+			self._speak(_("No hay grabaciones activas."))
+		else:
+			self._speak(", ".join(msgs))
+
+	@script(
+		description=_("Pausa o reanuda la grabación activa."),
 		category=_("MLRecorder"),
 		gesture="kb:NVDA+shift+p",
 	)
@@ -415,6 +611,18 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 					self._speak(_("Grabación de proceso pausada."))
 			except Exception as exc:
 				self._speak(_("Error al alternar pausa: %s") % exc)
+			return
+
+		if self._systemSession is not None:
+			try:
+				if self._systemSession.is_paused():
+					self._systemSession.resume()
+					self._speak(_("Grabación de sistema reanudada."))
+				else:
+					self._systemSession.pause()
+					self._speak(_("Grabación de sistema pausada."))
+			except Exception as exc:
+				self._speak(_("Error al alternar pausa de sistema: %s") % exc)
 			return
 
 		if self._microphoneSession is not None:
@@ -455,9 +663,59 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._speak(_("No hay grabación activa."))
 
 	@script(
-		description=_("Detiene todas las grabaciones activas de MLRecorder."),
+		description=_("Detiene la grabación activa, sea del tipo que sea."),
 		category=_("MLRecorder"),
-		gesture="kb:NVDA+shift+s",
+	)
+	def script_stopActiveRecording(self, gesture):
+		del gesture
+		stopped_something = False
+		
+		# Stop System
+		if self._systemSession:
+			try:
+				self._systemSession.stop()
+				self._systemSession = None
+				self._speak(_("Grabación de sistema detenida."))
+				stopped_something = True
+			except Exception as exc:
+				self._speak(_("Error al detener sistema: %s") % exc)
+
+		# Stop Process
+		if self._processSession:
+			try:
+				self._processSession.stop()
+				self._processSession = None
+				self._speak(_("Grabación de proceso detenida."))
+				stopped_something = True
+			except Exception as exc:
+				self._speak(_("Error al detener proceso: %s") % exc)
+
+		# Stop Mixed
+		if self._mixedSession:
+			try:
+				self._mixedSession.stop()
+				self._mixedSession = None
+				self._speak(_("Grabación mixta detenida."))
+				stopped_something = True
+			except Exception as exc:
+				self._speak(_("Error al detener mezcla: %s") % exc)
+
+		# Stop Mic
+		if self._microphoneSession:
+			try:
+				self._microphoneSession.stop()
+				self._microphoneSession = None
+				self._speak(_("Grabación de micrófono detenida."))
+				stopped_something = True
+			except Exception as exc:
+				self._speak(_("Error al detener micrófono: %s") % exc)
+				
+		if not stopped_something:
+			self._speak(_("No hay grabaciones activas para detener."))
+
+	@script(
+		description=_("Detiene TODAS las grabaciones activas."),
+		category=_("MLRecorder"),
 	)
 	def script_stopAllRecordings(self, gesture):
 		del gesture
@@ -465,50 +723,49 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._speak(_("Todas las grabaciones detenidas."))
 
 	@script(
-		description=_("Informa estado de grabación de MLRecorder."),
+		description=_("Abre la carpeta de grabaciones."),
 		category=_("MLRecorder"),
-		gesture="kb:NVDA+shift+i",
 	)
-	def script_reportStatus(self, gesture):
+	def script_openRecordingsFolder(self, gesture):
 		del gesture
-		parts = []
-		if self._processSession is not None:
-			try:
-				label = _("proceso pausado") if self._processSession.is_paused() else _("proceso activo")
-			except Exception:
-				label = _("proceso activo")
-			parts.append(label)
-		if self._microphoneSession is not None:
-			try:
-				label = _("micrófono pausado") if self._microphoneSession.is_paused() else _("micrófono activo")
-			except Exception:
-				label = _("micrófono activo")
-			parts.append(label)
-		if self._mixedSession is not None:
-			try:
-				paused = self._mlr.is_recorder_paused(self._mixedSession.process_id)
-				label = _("mezcla pausada") if paused else _("mezcla activa")
-			except Exception:
-				label = _("mezcla activa")
-			parts.append(label)
-		if not parts:
-			parts.append(_("sin grabaciones activas"))
-		self._speak(", ".join(parts))
+		full_path = self._defaultOutputDir()
+		if os.path.isdir(full_path):
+			os.startfile(full_path)
+		else:
+			self._speak(_("La carpeta de grabaciones no existe o no se pudo encontrar."))
 
 	@script(
-		description=_("Genera reporte de depuración de MLRecorder."),
+		description=_("Activa la capa de comandos de MLRecorder"),
 		category=_("MLRecorder"),
-		gesture="kb:NVDA+shift+d",
+		gesture="kb:NVDA+alt+a",
 	)
-	def script_dumpDiagnostics(self, gesture):
-		del gesture
-		try:
-			path = self._writeDiagnosticReport("manual-dump")
-			self._speak(_("Reporte de depuración generado: %s") % path.name)
-			ui.browseableMessage(
-				path.read_text(encoding="utf-8", errors="replace"),
-				_("MLRecorder - Reporte de depuración"),
-				isHtml=False,
-			)
-		except Exception as exc:
-			self._speak(_("No se pudo generar el reporte: %s") % exc)
+	def script_commandLayer(self, gesture):
+		if self.toggling:
+			self.script_error(gesture)
+			return
+		self.bindGestures(self.__commandGestures)
+		self.toggling = True
+		self._speak(_("Capa de audio activada."))
+		tones.beep(349.23, 110) # Optional beep
+
+	__commandGestures = {
+		"kb:p": "toggleFocusedProcessRecording",
+		"kb:alt+p": "toggleMixedRecording",
+		"kb:s": "toggleSystemRecording",
+		"kb:alt+s": "toggleSystemMixedRecording",
+		"kb:m": "toggleMicrophoneRecording", # Kept 'm' for mic, as 's' is system
+		"kb:d": "stopActiveRecording",
+		"kb:alt+d": "stopAllRecordings",
+		"kb:o": "openRecordingsFolder",
+		"kb:i": "reportStatus",
+	}
+	__gestures = {
+		"kb:NVDA+shift+r": "toggleFocusedProcessRecording",
+		"kb:NVDA+shift+m": "toggleMicrophoneRecording",
+		"kb:NVDA+shift+g": "toggleSystemRecording",
+		"kb:NVDA+shift+x": "toggleMixedRecording",
+		"kb:NVDA+shift+h": "toggleSystemMixedRecording",
+		"kb:NVDA+alt+a": "commandLayer",
+		"kb:NVDA+shift+i": "reportStatus",
+		"kb:NVDA+shift+o": "openRecordingsFolder",
+	}

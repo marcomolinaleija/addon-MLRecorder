@@ -25,7 +25,7 @@ addon_info = {
 	# Translators: Long description to be shown for this add-on on add-on information from add-ons manager
 	"addon_description": _("""Este complemento proporciona Comandos globales de NVDA para aislar y grabar el audio del proceso enfocado, micrófono o audio mixto mediante MLRecorder."""),
 	# version
-	"addon_version": "2026.02.17",
+	"addon_version": "2026.02.18",
 	# Author(s)
 	"addon_author": "Marco Leija <marcoleija@marco-ml.com>",
 	# URL for the add-on documentation support
